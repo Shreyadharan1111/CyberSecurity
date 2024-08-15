@@ -1,0 +1,164 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <openssl/rsa.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
+#include <opencv2/opencv.hpp>
+
+using namespace cv;
+
+#define RSA_KEY_LENGTH 2048
+#define RSA_PADDING RSA_PKCS1_PADDING
+
+void handleErrors(void) {
+    ERR_print_errors_fp(stderr);
+    abort();
+}
+
+RSA* generateRSAKeyPair() {
+    RSA *rsa = RSA_new();
+    BIGNUM *bn = BN_new();
+    BN_set_word(bn, RSA_F4);
+    if (!RSA_generate_key_ex(rsa, RSA_KEY_LENGTH, bn, NULL)) {
+        handleErrors();
+    }
+    BN_free(bn);
+    return rsa;
+}
+
+void saveRSAPrivateKey(RSA *rsa, const char *filename) {
+    FILE *file = fopen(filename, "wb");
+    if (!file) {
+        perror("Opening file");
+        exit(1);
+    }
+    PEM_write_RSAPrivateKey(file, rsa, NULL, NULL, 0, NULL, NULL);
+    fclose(file);
+}
+
+RSA* loadRSAPrivateKey(const char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        perror("Opening file");
+        exit(1);
+    }
+    RSA *rsa = PEM_read_RSAPrivateKey(file, NULL, NULL, NULL);
+    fclose(file);
+    return rsa;
+}
+
+void saveRSAPublicKey(RSA *rsa, const char *filename) {
+    FILE *file = fopen(filename, "wb");
+    if (!file) {
+        perror("Opening file");
+        exit(1);
+    }
+    PEM_write_RSA_PUBKEY(file, rsa);
+    fclose(file);
+}
+
+RSA* loadRSAPublicKey(const char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        perror("Opening file");
+        exit(1);
+    }
+    RSA *rsa = PEM_read_RSA_PUBKEY(file, NULL, NULL, NULL);
+    fclose(file);
+    return rsa;
+}
+
+void encryptImage(const char *inputImagePath, const char *outputImagePath, RSA *rsaPublic) {
+    Mat image = imread(inputImagePath, IMREAD_UNCHANGED);
+    if (image.empty()) {
+        fprintf(stderr, "Could not open or find the image\n");
+        exit(1);
+    }
+
+    int imageSize = image.total() * image.elemSize();
+    unsigned char *plaintext = image.data;
+    int encryptedSize = RSA_size(rsaPublic);
+    unsigned char *encrypted = (unsigned char *)malloc(encryptedSize);
+    if (encrypted == NULL) {
+        fprintf(stderr, "Memory allocation error\n");
+        exit(1);
+    }
+
+    if (RSA_public_encrypt(imageSize, plaintext, encrypted, rsaPublic, RSA_PADDING) == -1) {
+        handleErrors();
+    }
+
+    FILE *file = fopen(outputImagePath, "wb");
+    if (!file) {
+        perror("Opening file");
+        exit(1);
+    }
+    fwrite(encrypted, 1, encryptedSize, file);
+    fclose(file);
+
+    free(encrypted);
+}
+
+void decryptImage(const char *inputImagePath, const char *outputImagePath, RSA *rsaPrivate) {
+    FILE *file = fopen(inputImagePath, "rb");
+    if (!file) {
+        perror("Opening file");
+        exit(1);
+    }
+    fseek(file, 0, SEEK_END);
+    long encryptedSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    unsigned char *encrypted = (unsigned char *)malloc(encryptedSize);
+    if (encrypted == NULL) {
+        fprintf(stderr, "Memory allocation error\n");
+        exit(1);
+    }
+    fread(encrypted, 1, encryptedSize, file);
+    fclose(file);
+
+    int decryptedSize = RSA_size(rsaPrivate);
+    unsigned char *decrypted = (unsigned char *)malloc(decryptedSize);
+    if (decrypted == NULL) {
+        fprintf(stderr, "Memory allocation error\n");
+        exit(1);
+    }
+
+    if (RSA_private_decrypt(encryptedSize, encrypted, decrypted, rsaPrivate, RSA_PADDING) == -1) {
+        handleErrors();
+    }
+
+    Mat decryptedImage = Mat(Size(256, 256), CV_8UC3, decrypted);  // Adjust size and type as needed
+    imwrite(outputImagePath, decryptedImage);
+
+    free(encrypted);
+    free(decrypted);
+}
+
+int main() {
+    const char *privateKeyPath = "private_key.pem";
+    const char *publicKeyPath = "public_key.pem";
+
+    RSA *rsaKeyPair = generateRSAKeyPair();
+    saveRSAPrivateKey(rsaKeyPair, privateKeyPath);
+    saveRSAPublicKey(rsaKeyPair, publicKeyPath);
+    RSA_free(rsaKeyPair);
+
+    RSA *rsaPrivate = loadRSAPrivateKey(privateKeyPath);
+    RSA *rsaPublic = loadRSAPublicKey(publicKeyPath);
+
+    const char *inputImagePath = "input.jpg";
+    const char *encryptedImagePath = "encrypted.bin";
+    const char *decryptedImagePath = "decrypted.jpg";
+
+    encryptImage(inputImagePath, encryptedImagePath, rsaPublic);
+    printf("Image encrypted successfully\n");
+
+    decryptImage(encryptedImagePath, decryptedImagePath, rsaPrivate);
+    printf("Image decrypted successfully\n");
+
+    RSA_free(rsaPrivate);
+    RSA_free(rsaPublic);
+
+    return 0;
+}
